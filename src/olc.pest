@@ -1,0 +1,31 @@
+COMMENT = _{single_line_comment}
+single_line_comment = { "#" ~ (!NEWLINE ~ ANY)* }
+WHITESPACE = _{" " | "\t"}
+
+keyword = _{"InterfaceVersion" | "Model" | "CorrectionType" | "IRregularisation" | "MassiveParticleScheme"
+            | "CouplingPower" | "MassiveParticles" | "DebugUnstable" | "Extra" | "extra" | "ewscheme" }
+
+config_line = _{keyword ~ (!"|" ~ ANY)* ~ "|" ~ ("OK" | "Ok" | "ok") ~ NEWLINE}
+
+prelude = _{ (config_line | NEWLINE | COMMENT)*}
+
+AType = _{"Tree" | "Loop" }
+
+pdg_number = ${"-"? ~ (!" " ~ ASCII_DIGIT)+}
+
+initial_list = {pdg_number+}
+
+final_list = {pdg_number+}
+
+process_spec = { initial_list ~ "->" ~ final_list }
+
+process_id = {ASCII_DIGIT*}
+
+subprocess = { "AmplitudeType" ~ AType ~ "|" ~ ("OK" | "Ok" | "ok") ~ NEWLINE ~ process_spec ~ "|" ~ "1" ~ process_id}
+
+file = {
+    SOI ~ NEWLINE* ~
+    prelude ~ NEWLINE* ~
+    (subprocess ~ NEWLINE*)* ~ NEWLINE* ~
+    EOI
+}
