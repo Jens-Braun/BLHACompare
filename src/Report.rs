@@ -149,7 +149,7 @@ pub fn draw_boxplots(outfile_path: &PathBuf,
                      outlier_threshold: f64,
                      result: &HashMap<(Vec<i32>, Vec<i32>), Vec<[f64; 4]>>)
                      -> eyre::Result<()> {
-    let canvas = SVGBackend::new(outfile_path, (4 * 680, 80 + result.len() as u32 * 20)).into_drawing_area();
+    let canvas = SVGBackend::new(outfile_path, (4 * 680, 80 + result.len() as u32 * 25)).into_drawing_area();
     let areas = canvas.split_evenly((1, 4));
     let mut charts = Vec::with_capacity(4);
     let keys: Vec<String> = result.keys().map(|k| process_string(k)).collect();
@@ -171,7 +171,7 @@ pub fn draw_boxplots(outfile_path: &PathBuf,
 
         let mut chart = ChartBuilder::on(&areas[i])
             .x_label_area_size(40)
-            .y_label_area_size(80)
+            .y_label_area_size(120)
             .caption(format!("Boxplot for component {i}"), ("sans-serif", 20).into_font())
             .build_cartesian_2d(x_range.clone(), keys[..].into_segmented())?;
         chart.configure_mesh().x_desc("(olp_1 - olp_2)/(olp_1 + olp_2)").y_desc("").y_labels(keys.len()).draw()?;

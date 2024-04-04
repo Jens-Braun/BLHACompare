@@ -170,7 +170,7 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
                  }
                  if !res.iter().any(|x| x.is_nan()) {
                      worker_res.push((key.clone(), res));
-                     if res.iter().any(|x| x > &config.outlier_threshold) {
+                     if res.iter().any(|x| x.abs() > config.outlier_threshold) {
                          outliers.push((key.clone(), (k, olp_1_res, olp_2_res, res)));
                      }
                  }

@@ -3,7 +3,8 @@ single_line_comment = { "#" ~ (!NEWLINE ~ ANY)* }
 WHITESPACE = _{" " | "\t"}
 
 keyword = _{"InterfaceVersion" | "Model" | "CorrectionType" | "IRregularisation" | "MassiveParticleScheme"
-            | "CouplingPower" | "MassiveParticles" | "DebugUnstable" | "Extra" | "extra" | "ewscheme" }
+            | "CouplingPower" | "MassiveParticles" | "DebugUnstable" | "Extra" | "extra" | "ewscheme"
+            | "ewrenormalisationscheme" | "alphapower" | "alphaspower"}
 
 config_line = _{keyword ~ (!"|" ~ ANY)* ~ "|" ~ ("OK" | "Ok" | "ok") ~ NEWLINE}
 

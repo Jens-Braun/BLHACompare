@@ -24,9 +24,6 @@ pub struct OneLoopProvider {
     OLP_SetParameter: Symbol<'this, unsafe extern fn(*const c_char, *const f64, *const f64, *mut i32)>,
     #[borrows(lib)]
     #[covariant]
-    OLP_PrintParameter: Symbol<'this, unsafe extern fn(*const c_char)>,
-    #[borrows(lib)]
-    #[covariant]
     OLP_Evaluate: Symbol<'this, unsafe extern fn(*const i32, *const f64, *const f64, *mut f64, *mut f64)>
 }
 
@@ -50,8 +47,6 @@ impl OneLoopProvider {
                 .unwrap_or_else(|e| panic!("Failed to read symbol 'OLP_Start' from {library_path:#?}: {e}")) },
             OLP_SetParameter_builder: |l| unsafe { l.get(b"OLP_SetParameter")
                 .unwrap_or_else(|e| panic!("Failed to read symbol 'OLP_SetParameter' from {library_path:#?}: {e}")) },
-            OLP_PrintParameter_builder: |l| unsafe { l.get(b"OLP_PrintParameter")
-                .unwrap_or_else(|e| panic!("Failed to read symbol 'OLP_PrintParameter' from {library_path:+?}: {e}")) },
             OLP_Evaluate_builder: |l| unsafe { l.get(b"OLP_EvalSubProcess2")
                 .unwrap_or_else(|e| panic!("Failed to read symbol 'OLP_EvalSubProcess2' from {library_path:#?}: {e}")) },
         }.build());
@@ -105,15 +100,6 @@ impl OneLoopProvider {
             2 => Err(eyre!("Failed to set unknown parameter {parameter}")),
             _ => Err(eyre!("OLP_SetParameter returned undefined error code {ierr}"))
         };
-    }
-
-    /// Safe wrapper to `OLP_PrintParameter`.
-    pub fn print_parameter(&self, outfile: &PathBuf) -> eyre::Result<()> {
-        let outfile_c = CString::new(outfile.to_str().unwrap())?;
-        unsafe {
-            self.borrow_OLP_PrintParameter()(outfile_c.as_ptr());
-        }
-        return Ok(());
     }
 
     /// Safe wrapper to `OLP_EvalSubProcess2`. This implementation explicitly assume the result
