@@ -3,38 +3,39 @@ use std::collections::HashMap;
 use color_eyre::eyre::{WrapErr};
 use std::io::Write;
 use plotters::prelude::*;
+use crate::OLCParser::Subprocess;
+use crate::Outlier;
 
 const GREY: RGBColor = RGBColor(158, 158, 158);
 
-/// Format the `(Vec<i32>, Vec<i32>)` key into a subprocess specifier of the form
-/// `initial pdg codes -> final pdg codes`.
-pub fn process_string(key: &(Vec<i32>, Vec<i32>)) -> String {
-    let mut key_string = String::new();
-    for i in &key.0 {
-        key_string.push_str(&i.to_string());
-        key_string.push(' ');
-    }
-    key_string.push_str("-> ");
-    for f in &key.1 {
-        key_string.push_str(&f.to_string());
-        key_string.push(' ');
-    }
-    return key_string;
-}
 
 /// Write a text report to `outfile_path` that contains the result of the full sample and only the outliers
 /// for each subprocess
 pub fn write_text_report(outfile_path: &PathBuf,
                          outlier_threshold: f64,
-                         result: &HashMap<(Vec<i32>, Vec<i32>), Vec<[f64; 4]>>,
-                         outliers: &HashMap<(Vec<i32>, Vec<i32>), Vec<(Vec<[f64; 4]>, [f64; 4], [f64; 4], [f64; 4])>>)
+                         result: &HashMap<Subprocess, Vec<[f64; 4]>>,
+                         outliers: &HashMap<Subprocess, Vec<Outlier>>)
     -> eyre::Result<()> {
     let outfile = std::fs::File::create(outfile_path)
         .wrap_err("Failed to create or access output file")?;
     let mut outfile_writer = std::io::BufWriter::new(outfile);
 
+    let total_mean: Vec<f64> = (0..4).map(|i| result.values().map(|val|
+        val.iter().map(|x| x[i]).sum::<f64>()).sum::<f64>() /
+        result.values().map(|val| val.len() as f64).sum::<f64>()).collect();
+    let total_variance: Vec<f64> = (0..4).map(|i|
+        result.values().map(|val| val.iter().map(|x| (x[i] - total_mean[i]).powi(2)).sum::<f64>()).sum::<f64>()
+         / (result.values().map(|val| val.len() as f64).sum::<f64>() - 1.)
+    ).collect();
+    let total_std_deviation: Vec<f64> = total_variance.iter().map(|x| x.sqrt()).collect();
+
+
+    writeln!(&mut outfile_writer, "={:=^120}=", " Summary of all subprocesses ")?;
+    for i in 0..4 {
+        writeln!(&mut outfile_writer, "Result component {i}: {} ± {}", total_mean[i], total_std_deviation[i])?;
+    }
+
     for key in result.keys() {
-        let key_string = process_string(key);
 
         let data = result.get(key).unwrap();
         let outlier_data = outliers.get(key);
@@ -51,11 +52,15 @@ pub fn write_text_report(outfile_path: &PathBuf,
 
 
 
-        writeln!(&mut outfile_writer, "={:=^80}=", format!(" Subprocess {}", key_string))?;
+        writeln!(&mut outfile_writer, "={:=^120}=", format!(" Subprocess {}", key.to_string()))?;
         for i in 0..4 {
             writeln!(&mut outfile_writer, "Result component {i}: {} ± {}", mean[i], std_deviation[i])?;
         }
-        writeln!(&mut outfile_writer, "Found {} outliers with absolute deviations", n_outliers)?;
+        if outliers.len() > 0 {
+            writeln!(&mut outfile_writer, "Found {} outliers in {} points with absolute deviations", n_outliers, data.len())?;
+        } else {
+            writeln!(&mut outfile_writer, "Found {} outliers in {} points.", n_outliers, data.len())?;
+        }
 
         match outlier_data {
             Some(d) => {
@@ -64,8 +69,8 @@ pub fn write_text_report(outfile_path: &PathBuf,
                 let mut outlier_std_deviation:[f64; 4] = [0.0; 4];
                 for i in 0..4 {
                     let component_outliers: Vec<f64> = d.iter()
-                        .filter(|x| x.3[i] > outlier_threshold)
-                        .map(|x| x.3[i])
+                        .filter(|x| x.difference_result[i] > outlier_threshold)
+                        .map(|x| x.difference_result[i])
                         .collect();
                     outlier_abs_mean[i] = component_outliers.iter().sum::<f64>() / (component_outliers.len() as f64);
                     outlier_variance[i] = component_outliers.iter()
@@ -86,8 +91,8 @@ pub fn write_text_report(outfile_path: &PathBuf,
 /// Draw histograms for all components for each subprocess that contains at least one component with outliers
 pub fn draw_histograms(outfile_path: &PathBuf,
                        outlier_threshold: f64,
-                       result: &HashMap<(Vec<i32>, Vec<i32>), Vec<[f64; 4]>>,
-                       outliers: &HashMap<(Vec<i32>, Vec<i32>), Vec<(Vec<[f64; 4]>, [f64; 4], [f64; 4], [f64; 4])>>)
+                       result: &HashMap<Subprocess, Vec<[f64; 4]>>,
+                       outliers: &HashMap<Subprocess, Vec<Outlier>>)
                        -> eyre::Result<()> {
     let canvas = SVGBackend::new(outfile_path, (4 * 640, outliers.len() as u32 * 360)).into_drawing_area();
     let areas = canvas.split_evenly((outliers.len(), 4));
@@ -95,7 +100,7 @@ pub fn draw_histograms(outfile_path: &PathBuf,
     let mut hists = Vec::with_capacity(4 * outliers.len());
     for (i, key) in outliers.keys().enumerate() {
         for j in 0..4 {
-            let key_string = process_string(key);
+            let key_string = key.to_string();
             let component_data: Vec<f64> = result.get(key).unwrap().iter().map(|x| x[j]).collect();
             let data_max: f64 = *component_data.iter().max_by(|x, y| x.total_cmp(y)).unwrap();
             let data_min: f64 = *component_data.iter().min_by(|x, y| x.total_cmp(y)).unwrap();
@@ -147,12 +152,12 @@ pub fn draw_histograms(outfile_path: &PathBuf,
 /// Draw one boxplot for each component containing all subprocesses
 pub fn draw_boxplots(outfile_path: &PathBuf,
                      outlier_threshold: f64,
-                     result: &HashMap<(Vec<i32>, Vec<i32>), Vec<[f64; 4]>>)
+                     result: &HashMap<Subprocess, Vec<[f64; 4]>>)
                      -> eyre::Result<()> {
     let canvas = SVGBackend::new(outfile_path, (4 * 680, 80 + result.len() as u32 * 25)).into_drawing_area();
     let areas = canvas.split_evenly((1, 4));
     let mut charts = Vec::with_capacity(4);
-    let keys: Vec<String> = result.keys().map(|k| process_string(k)).collect();
+    let keys: Vec<String> = result.keys().map(|k| k.to_string()).collect();
     let max: Vec<f64> = (0..4).into_iter().map(|i|
         result.values().map(|val| val.iter().map(|x| x[i]).max_by(|x, y| x.total_cmp(&y)).unwrap())
             .max_by(|x, y| x.total_cmp(&y)).unwrap()
@@ -163,10 +168,18 @@ pub fn draw_boxplots(outfile_path: &PathBuf,
     ).collect();
     for i in 0..4 {
         let x_range;
+        let mut x_scale_factor = 1;
+        let mut x_shift_factor = 0.0;
         if min[i] == max[i] {
             x_range = -1.0..1.0;
         } else {
             x_range = (min[i] - 0.05 * (max[i] - min[i]))..(max[i] + 0.05 * (max[i] - min[i]));
+            if max[i] - min[i] < 1E-4 {
+                x_scale_factor = (-(max[i] - min[i]).log10()).floor() as u32;
+                if (max[i] - min[i]) < 1E-2 * (max[i] + min[i]) {
+                    x_shift_factor = (max[i] + min[i]) / 2.;
+                }
+            }
         }
 
         let mut chart = ChartBuilder::on(&areas[i])
@@ -174,9 +187,26 @@ pub fn draw_boxplots(outfile_path: &PathBuf,
             .y_label_area_size(120)
             .caption(format!("Boxplot for component {i}"), ("sans-serif", 20).into_font())
             .build_cartesian_2d(x_range.clone(), keys[..].into_segmented())?;
-        chart.configure_mesh().x_desc("(olp_1 - olp_2)/(olp_1 + olp_2)").y_desc("").y_labels(keys.len()).draw()?;
+
+        if x_scale_factor != 1 {
+            chart.configure_mesh()
+                .x_desc("(olp_1 - olp_2)/(olp_1 + olp_2)")
+                .y_desc("")
+                .y_labels(keys.len())
+                .x_label_formatter(&|x| {
+                    format!("{:.4}", (x  - x_shift_factor) * 10i32.pow(x_scale_factor) as f64)
+                })
+                .draw()?;
+        } else {
+            chart.configure_mesh()
+                .x_desc("(olp_1 - olp_2)/(olp_1 + olp_2)")
+                .y_desc("")
+                .y_labels(keys.len())
+                .draw()?
+        }
+
         chart.draw_series(result.iter().map(|(key, value)| {
-            let key_string: &String = &keys.iter().filter(|s| **s == process_string(key)).collect::<Vec<&String>>()[0];
+            let key_string: &String = &keys.iter().filter(|s| **s == key.to_string()).collect::<Vec<&String>>()[0];
             let component_data: Vec<f64> = value.iter().map(|x| x[i]).collect();
             let mean = component_data.iter().sum::<f64>() / (component_data.len() as f64);
             let std_dev = component_data.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (component_data.len() as f64 - 1.);
@@ -202,6 +232,12 @@ pub fn draw_boxplots(outfile_path: &PathBuf,
             &Rectangle::new([(- outlier_threshold, 0f64), (outlier_threshold, 1f64)],
                             GREY.mix(0.4).filled())
         )?;
+        if x_scale_factor != 1 {
+            chart2.plotting_area().draw(&(
+                EmptyElement::at((min[i] - 0.15 * (max[i] - min[i]), -0.5)) +
+                MultiLineText::from_string(format!("x10^(-{})\n {:+.2}", x_scale_factor, x_shift_factor * 10i32.pow(x_scale_factor) as f64),
+                          (-50, 10), ("", 13).into_font(), 100)))?;
+        }
         charts.push(chart);
     }
 

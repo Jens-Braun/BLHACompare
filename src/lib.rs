@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::OLP::OneLoopProvider;
 use crate::Rambo::rambo;
 use tempfile::tempdir;
+use crate::OLCParser::Subprocess;
 
 pub mod Rambo;
 pub mod OLCParser;
@@ -43,6 +44,7 @@ pub struct CLIConfig {
 /// - `scale`: Energy scale of the process
 /// - `masses`: List of masses to use for the RAMBO phase space generator. The total number of particles
 ///             is inferred from the length of `masses`
+/// - `save_outliers`: Whether to save the outliers to a file `outliers.json`. (default = true)
 /// - `olp_1`: Configuration for the first one loop provider
 /// - `olp_2`: Configuration for the second one loop provider
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
@@ -51,6 +53,7 @@ pub struct Config {
     pub outlier_threshold: f64,
     pub scale: f64,
     pub masses: Vec<f64>,
+    pub save_outliers: Option<bool>,
     pub olp_1: OLPConfig,
     pub olp_2: OLPConfig,
 }
@@ -75,7 +78,8 @@ pub struct OLPConfig {
     pub permutation: Option<[usize; 4]>
 }
 
-#[derive(Serialize, Deserialize)]
+/// Struct to holt the momenta and results of an outlier phase space point.
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Outlier {
     pub momenta: Vec<[f64; 4]>,
     pub olp_1_result: [f64; 4],
@@ -83,11 +87,21 @@ pub struct Outlier {
     pub difference_result: [f64; 4]
 }
 
+impl Outlier {
+    pub fn new(momenta: Vec<[f64; 4]>, olp_1_result: [f64; 4], olp_2_result: [f64; 4], difference_result: [f64; 4]) -> Outlier {
+        return Outlier {
+            momenta,
+            olp_1_result,
+            olp_2_result,
+            difference_result
+        };
+    }
+}
+
 /// Generate the actual sample of the subprocesses.
 pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
-                   -> eyre::Result<(HashMap<(Vec<i32>, Vec<i32>), Vec<[f64; 4]>>,
-                                    HashMap<(Vec<i32>, Vec<i32>), Vec<(Vec<[f64; 4]>, [f64; 4], [f64; 4], [f64; 4])>>)> {
-    println!("[2/4] Generating sample of size {}....", &config.n_points);
+                   -> eyre::Result<(HashMap<Subprocess, Vec<[f64; 4]>>,
+                                    HashMap<Subprocess, Vec<Outlier>>)> {
     procspawn::init();
     let mut jobs: usize = std::thread::available_parallelism()?.get();
 
@@ -97,6 +111,7 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
         }
     }
     let batch_size = config.n_points / jobs ;
+    println!("[2/4] Generating sample of size {}....", batch_size * jobs);
     { // Initialize both OLPs once to catch possible errors, since errors from the workers are not properly propagated to the main process
         let mut olp_1 = OneLoopProvider::create(&config.olp_1.order_file, &config.olp_1.library_path)
             .wrap_err("Failed to create OneLoopProvider struct for olp_1").unwrap();
@@ -107,13 +122,18 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
         olp_2.init(&config.olp_2.order_file, &config.olp_2.contract_file, &config.olp_2.model_parameters)
             .wrap_err("Failed to initialize olp_2").unwrap();
 
-        let common_subprocesses: Vec<(Vec<i32>, Vec<i32>)> = olp_1.get_sp_table().unwrap().keys()
-            .map(|key| key.clone())
+        let common_subprocesses: Vec<Subprocess> = olp_1.get_sp_table().unwrap().keys()
+            .map(|key| (*key).clone())
             .filter(|key| olp_2.get_sp_table().unwrap().contains_key(key))
             .collect();
 
         if common_subprocesses.len() == 0 {
             return Err(eyre!("No common subprocesses between olp_1 and olp_2."));
+        }
+        if common_subprocesses.first().unwrap().n_external_legs() != config.masses.len() {
+            return Err(eyre!("Number of masses ({}) supplied in the configuration does not match the \
+            number of particles in the contract file ({})", config.masses.len(),
+                common_subprocesses.first().unwrap().n_external_legs()));
         }
     }
     let mut worker_handles = vec![];
@@ -121,8 +141,8 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
     for i in 0..jobs {
         worker_handles.push(procspawn::spawn((i, batch_size, (*cli_config).clone(), (*config).clone()),
          |(i, batch_size, cli_config, config)| {
-             let mut worker_res: Vec<((Vec<i32>, Vec<i32>), [f64; 4])> = Vec::with_capacity(batch_size);
-             let mut outliers: Vec<((Vec<i32>, Vec<i32>), (Vec<[f64; 4]>, [f64; 4], [f64; 4], [f64; 4]))> = Vec::new();
+             let mut worker_res: HashMap<Subprocess, Vec<[f64; 4]>> = HashMap::new();
+             let mut outliers: HashMap<Subprocess, Vec<Outlier>> = HashMap::new();
              let mut rng = Pcg64Mcg::seed_from_u64(cli_config.seed.unwrap_or_else(|| random()));
              rng.advance((i * batch_size) as u128);
 
@@ -134,14 +154,14 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
              olp_1.init(&config.olp_1.order_file, &config.olp_1.contract_file, &config.olp_1.model_parameters).unwrap();
              olp_2.init(&config.olp_2.order_file, &config.olp_2.contract_file, &config.olp_2.model_parameters).unwrap();
 
-             let common_subprocesses: Vec<(Vec<i32>, Vec<i32>)> = olp_1.get_sp_table().unwrap().keys()
+             let common_subprocesses: Vec<Subprocess> = olp_1.get_sp_table().unwrap().keys()
                  .map(|key| key.clone())
                  .filter(|key| olp_2.get_sp_table().unwrap().contains_key(key))
                  .collect();
 
-             let n_in: usize = common_subprocesses[0].0.len();
+             let n_in: usize = common_subprocesses.first().unwrap().n_in();
 
-             let mut key: &(Vec<i32>, Vec<i32>);
+             let mut key: &Subprocess;
              let mut k : Vec<[f64; 4]>;
              let mut olp_1_res: [f64; 4];
              let mut olp_2_res: [f64; 4];
@@ -169,9 +189,17 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
                      }
                  }
                  if !res.iter().any(|x| x.is_nan()) {
-                     worker_res.push((key.clone(), res));
+                     if worker_res.contains_key(key) {
+                         worker_res.get_mut(key).unwrap().push(res);
+                     } else {
+                         worker_res.insert((*key).clone(), vec![res]);
+                     }
                      if res.iter().any(|x| x.abs() > config.outlier_threshold) {
-                         outliers.push((key.clone(), (k, olp_1_res, olp_2_res, res)));
+                         if outliers.contains_key(key) {
+                             outliers.get_mut(key).unwrap().push(Outlier::new(k, olp_1_res, olp_2_res, res));
+                         } else {
+                             outliers.insert((*key).clone(), vec![Outlier::new(k, olp_1_res, olp_2_res, res)]);
+                         }
                      }
                  }
                  if i == 0 {pb.inc(jobs);}
@@ -186,21 +214,21 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
     }
 
     println!("[3/4] Processing sample...");
-    let mut result: HashMap<(Vec<i32>, Vec<i32>), Vec<[f64; 4]>> = HashMap::new();
-    let mut outliers: HashMap<(Vec<i32>, Vec<i32>), Vec<(Vec<[f64; 4]>, [f64; 4], [f64; 4], [f64; 4])>> = HashMap::new();
-    for (worker_res, worker_outliers) in &result_list {
-        for (key, value) in worker_res {
+    let mut result: HashMap<Subprocess, Vec<[f64; 4]>> = HashMap::new();
+    let mut outliers: HashMap<Subprocess, Vec<Outlier>> = HashMap::new();
+    for (worker_res, worker_outliers) in &mut result_list {
+        for (key, value) in worker_res.iter_mut() {
             if result.contains_key(key) {
-                result.get_mut(key).unwrap().push(*value);
+                result.get_mut(key).unwrap().append(value);
             } else {
-                result.insert((*key).clone(), vec![*value]);
+                result.insert((*key).clone(), (*value).clone());
             }
         }
         for (key, value) in worker_outliers {
             if outliers.contains_key(key) {
-                outliers.get_mut(key).unwrap().push(value.clone());
+                outliers.get_mut(key).unwrap().append(value);
             } else {
-                outliers.insert((*key).clone(), vec![value.clone()]);
+                outliers.insert((*key).clone(), (*value).clone());
             }
         }
     }
@@ -244,6 +272,7 @@ mod tests {
             n_points: 10_000,
             outlier_threshold: 1E-3,
             scale: 13_000.,
+            save_outliers: None,
             masses: vec![0., 0., 125., 125., 0., 0.],
             olp_1: OLPConfig {
                 olp_name: Some(String::from("Foo")),

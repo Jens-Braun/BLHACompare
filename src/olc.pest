@@ -2,15 +2,14 @@ COMMENT = _{single_line_comment}
 single_line_comment = { "#" ~ (!NEWLINE ~ ANY)* }
 WHITESPACE = _{" " | "\t"}
 
-keyword = _{"InterfaceVersion" | "Model" | "CorrectionType" | "IRregularisation" | "MassiveParticleScheme"
-            | "CouplingPower" | "MassiveParticles" | "DebugUnstable" | "Extra" | "extra" | "ewscheme"
-            | "ewrenormalisationscheme" | "alphapower" | "alphaspower"}
+keyword = _{^"InterfaceVersion" | ^"Model" | ^"CorrectionType" | ^"IRregularisation" | ^"MassiveParticleScheme"
+            | ^"CouplingPower" | ^"MassiveParticles" | ^"DebugUnstable" | ^"Extra" | ^"extra" | ^"ewscheme"
+            | ^"ewrenormalisationscheme" | ^"alphapower" | ^"alphaspower"}
 
 config_line = _{keyword ~ (!"|" ~ ANY)* ~ "|" ~ ("OK" | "Ok" | "ok") ~ NEWLINE}
 
-prelude = _{ (config_line | NEWLINE | COMMENT)*}
 
-AType = _{"Tree" | "Loop" }
+amplitude_type = {"Tree" | "Loop" | "ccTree" | "scTree" | "scTree2" | "LoopInduced"}
 
 pdg_number = ${"-"? ~ (!" " ~ ASCII_DIGIT)+}
 
@@ -22,11 +21,12 @@ process_spec = { initial_list ~ "->" ~ final_list }
 
 process_id = {ASCII_DIGIT*}
 
-subprocess = { "AmplitudeType" ~ AType ~ "|" ~ ("OK" | "Ok" | "ok") ~ NEWLINE ~ process_spec ~ "|" ~ "1" ~ process_id}
+amplitude_type_specification = { "AmplitudeType" ~ amplitude_type ~ "|" ~ ("OK" | "Ok" | "ok")}
+
+subprocess = { process_spec ~ "|" ~ "1" ~ process_id }
 
 file = {
     SOI ~ NEWLINE* ~
-    prelude ~ NEWLINE* ~
-    (subprocess ~ NEWLINE*)* ~ NEWLINE* ~
+    ((subprocess | amplitude_type_specification | config_line) ~ NEWLINE*)* ~ NEWLINE* ~
     EOI
 }

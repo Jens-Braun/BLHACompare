@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use color_eyre::eyre::{WrapErr, eyre, OptionExt};
 use libloading::{Library, Symbol};
 use ouroboros::self_referencing;
-use crate::OLCParser::OLCParser;
+use crate::OLCParser::{OLCParser, Subprocess};
 use crate::Rambo::scalar;
 
 /// Wrapper struct providing safe bindings to the `BLHA2` interface of a shared library providing
@@ -14,7 +14,7 @@ use crate::Rambo::scalar;
 #[self_referencing]
 pub struct OneLoopProvider {
     lib: Library,
-    subprocess_table: Option<HashMap<(Vec<i32>, Vec<i32>), i32>>,
+    subprocess_table: Option<HashMap<Subprocess, i32>>,
     max_subprocess_id: Option<i32>,
     #[borrows(lib)]
     #[covariant]
@@ -140,7 +140,7 @@ impl OneLoopProvider {
     /// scale `scale`.
     /// The expected process spec is `(initial, final)` where `initial` and `final` are vectors of
     /// PDG codes of the incoming and outgoing particles.
-    pub fn evaluate_subprocess(&self, process_spec: &(Vec<i32>, Vec<i32>), momenta: &Vec<[f64; 4]>, scale: f64)
+    pub fn evaluate_subprocess(&self, process_spec: &Subprocess, momenta: &Vec<[f64; 4]>, scale: f64)
         -> eyre::Result<[f64; 4]>{
         let process_id = self.borrow_subprocess_table().as_ref()
             .ok_or_eyre("Evaluate_subprocess called before initialization")?.get(&process_spec)
@@ -149,7 +149,7 @@ impl OneLoopProvider {
     }
 
     /// Get reference to the subprocess table if it exists, error otherwise.
-    pub fn get_sp_table(&self) -> eyre::Result<&HashMap<(Vec<i32>, Vec<i32>), i32>> {
+    pub fn get_sp_table(&self) -> eyre::Result<&HashMap<Subprocess, i32>> {
         return self.borrow_subprocess_table().as_ref().ok_or_eyre("Get_sp_table called before initialization");
     }
 }

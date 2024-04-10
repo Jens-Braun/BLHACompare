@@ -4,7 +4,65 @@ use pest_derive::Parser;
 use std::collections::HashMap;
 use std::fs;
 use color_eyre::eyre::WrapErr;
+use eyre::eyre;
 use pest::iterators::Pair;
+use serde::{Deserialize, Serialize};
+
+/// Amplitude types defined by the BLHA2 standard.
+#[allow(non_camel_case_types)]
+#[derive(Eq, PartialEq, Hash, Clone, Serialize, Deserialize, Debug)]
+pub enum AmplitudeType {
+    Tree,
+    scTree,
+    ccTree,
+    scTree2,
+    Loop,
+    LoopInduced,
+}
+
+/// Struct to hold the relevant properties of a subprocess.
+#[derive(Eq, PartialEq, Hash, Clone, Serialize, Deserialize)]
+pub struct Subprocess {
+    amplitude_type: AmplitudeType,
+    incoming: Vec<i32>,
+    outgoing: Vec<i32>
+}
+
+impl Subprocess {
+    pub fn new(amplitude_type: AmplitudeType, incoming: Vec<i32>, outgoing: Vec<i32>) -> Subprocess {
+        return Subprocess {
+            amplitude_type,
+            incoming,
+            outgoing
+        };
+    }
+    pub fn n_external_legs(&self) -> usize {
+        return self.incoming.len() + self.outgoing.len();
+    }
+
+    pub fn n_in(&self) -> usize {
+        return self.incoming.len();
+    }
+
+    pub fn n_out(&self) -> usize {
+        return self.outgoing.len();
+    }
+
+    /// Return a process identifier string of the form `incoming pdg codes -> outgoing pdg codes`.
+    pub fn to_string(&self) -> String {
+        let mut key_string = String::new();
+        for i in &self.incoming {
+            key_string.push_str(&i.to_string());
+            key_string.push(' ');
+        }
+        key_string.push_str("-> ");
+        for f in &self.outgoing {
+            key_string.push_str(&f.to_string());
+            key_string.push(' ');
+        }
+        return key_string;
+    }
+}
 
 #[derive(Parser)]
 #[grammar = "olc.pest"]
@@ -17,7 +75,7 @@ pub struct OLCParser;
 
 impl OLCParser {
     /// Same as [OLCParser::subprocess_table_from_string], but the content is read from `file`.
-    pub fn subprocess_table_from_file(file: &PathBuf) -> eyre::Result<HashMap<(Vec<i32>, Vec<i32>), i32>> {
+    pub fn subprocess_table_from_file(file: &PathBuf) -> eyre::Result<HashMap<Subprocess, i32>> {
         let file_content = fs::read_to_string(file)
             .wrap_err_with(|| format!("Failed to read contract file {:#?}", file))?;
         let parsed_file = OLCParser::parse(Rule::file, &file_content)?.next().unwrap();
@@ -32,21 +90,38 @@ impl OLCParser {
     ///
     /// # Example
     /// ```rust
-    /// use BLHACompare::OLCParser::OLCParser;
+    /// use BLHACompare::OLCParser::{AmplitudeType, OLCParser, Subprocess};
     /// let table = OLCParser::subprocess_table_from_string(&String::from(r"AmplitudeType Tree | OK
     /// -2 21 -> 25 25 -2 -3 3 | 1 16")).unwrap();
-    /// assert_eq!(*table.get(&(vec![-2, 21], vec![25, 25, -2, -3, 3])).unwrap(), 16);
+    /// let subprocess = Subprocess::new(AmplitudeType::Tree, vec![-2, 21], vec![25, 25, -2, -3, 3]);
+    /// assert_eq!(*table.get(&subprocess).unwrap(), 16);
     /// ```
-    pub fn subprocess_table_from_string(content: &String) -> eyre::Result<HashMap<(Vec<i32>, Vec<i32>), i32>> {
+    pub fn subprocess_table_from_string(content: &String) -> eyre::Result<HashMap<Subprocess, i32>> {
         let parsed_string = OLCParser::parse(Rule::file, content)?.next().unwrap();
         return Self::translate_rules(parsed_string);
     }
 
-    fn translate_rules(parsed_content: Pair<Rule>) -> eyre::Result<HashMap<(Vec<i32>, Vec<i32>), i32>>{
-        let mut sp_table = HashMap::<(Vec<i32>, Vec<i32>), i32>::new();
+    fn translate_rules(parsed_content: Pair<Rule>) -> eyre::Result<HashMap<Subprocess, i32>>{
+        let mut sp_table = HashMap::<Subprocess, i32>::new();
+        let mut current_amplitude_type = AmplitudeType::Loop;
         for sp_rule in parsed_content.into_inner() {
             match sp_rule.as_rule() {
+                Rule::amplitude_type_specification => {
+                    let amplitude_type = sp_rule.into_inner();
+                    current_amplitude_type = match amplitude_type.as_str() {
+                        "Tree" => AmplitudeType::Tree,
+                        "scTree" => AmplitudeType::scTree,
+                        "scTree2" => AmplitudeType::scTree2,
+                        "ccTree" => AmplitudeType::ccTree,
+                        "Loop" => AmplitudeType::Loop,
+                        "LoopInduced" => AmplitudeType::LoopInduced,
+                        _ => return Err(eyre!("Encountered unknown amplitude type {amplitude_type}.")),
+                    }
+                }
                 Rule::subprocess => {
+                    if current_amplitude_type != AmplitudeType::Tree && current_amplitude_type != AmplitudeType::Loop {
+                        continue;
+                    }
                     let mut inner_rules = sp_rule.into_inner();
                     let mut initial_particles = Vec::<i32>::new();
                     let mut final_particles = Vec::<i32>::new();
@@ -58,7 +133,7 @@ impl OLCParser {
                         final_particles.push(final_pdg.as_str().parse::<i32>().unwrap());
                     }
                     let sp_id: i32 = inner_rules.next().unwrap().as_str().parse::<i32>().unwrap();
-                    sp_table.insert((initial_particles, final_particles), sp_id);
+                    sp_table.insert(Subprocess::new(current_amplitude_type.clone(), initial_particles, final_particles), sp_id);
                 }
                 Rule::EOI => (),
                 _ => unreachable!(),
@@ -70,7 +145,7 @@ impl OLCParser {
 
 #[cfg(test)]
 mod tests {
-    use super::{OLCParser};
+    use super::{AmplitudeType, OLCParser, Subprocess};
     #[test]
     fn parse_test() {
         let test_string = String::from(r"# BLHA order written by WHIZARD 3.1.4.1
@@ -184,6 +259,7 @@ AmplitudeType            Tree      | OK
 AmplitudeType            Tree      | OK
   2  -2 ->  25  25  -3   3  21 | 1   30");
         let sp_table = OLCParser::subprocess_table_from_string(&test_string).unwrap();
-        assert_eq!(*sp_table.get(&(vec![-2, 21], vec![25, 25, -1, 3, -4])).unwrap(), 22);
+        let sp = Subprocess::new(AmplitudeType::Tree, vec![-2, 21], vec![25, 25, -1, 3, -4]);
+        assert_eq!(*sp_table.get(&sp).unwrap(), 22);
     }
 }

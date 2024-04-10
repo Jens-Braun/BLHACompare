@@ -8,8 +8,14 @@ use color_eyre::eyre::{WrapErr, eyre};
 use BLHACompare::*;
 use BLHACompare::Report::{draw_boxplots, draw_histograms, write_text_report};
 
+fn main() {
+    match run() {
+        Ok(()) => (),
+        Err(E) => println!("BLHACompare terminated due to an error: \n {E}")
+    }
+}
 
-fn main() -> eyre::Result<()>{
+fn run() -> eyre::Result<()>{
     println!("[1/4] Parsing configuration...");
     let cli_config = CLIConfig::parse();
     let config_string = std::fs::read_to_string(&cli_config.config_file)
@@ -36,6 +42,7 @@ fn main() -> eyre::Result<()>{
     let (sample_result, outliers) =
         generate_sample(&cli_config, &config).wrap_err("Failed to generate sample")?;
     println!("[4/4] Generating report...");
+    let n_generated = sample_result.values().map(|vec| vec.len()).sum::<usize>();
     let outdir = PathBuf::from(cli_config.report_name.unwrap_or_else(|| String::from("BLHACompare_report")));
     if !outdir.exists() {
         std::fs::create_dir(&outdir).wrap_err("Failed to create report directory")?;
@@ -48,26 +55,22 @@ fn main() -> eyre::Result<()>{
     draw_boxplots(&outdir.join("Boxplots.svg"), config.outlier_threshold, &sample_result)
         .wrap_err("Failed to draw boxplots")?;
 
-    if outliers.len() > 0 {
+    if config.save_outliers.unwrap_or_else(|| true) && outliers.len() > 0 {
         let mut outlier_map = HashMap::new();
         for (key, outlier_values) in &outliers {
-            let key_string = Report::process_string(&key);
-            let outlier_structs: Vec<Outlier> = outlier_values.iter().map(|outlier|
-                Outlier {momenta: outlier.0.clone(), olp_1_result: outlier.1.clone(),
-                    olp_2_result: outlier.2.clone(), difference_result: outlier.3.clone()}
-            ).collect();
-            outlier_map.insert(key_string, outlier_structs);
+            let key_string = key.to_string();
+            outlier_map.insert(key_string, outlier_values);
         }
         let outlier_file = std::fs::File::create(outdir.join("outliers.json"))?;
         let outlier_writer = BufWriter::new(outlier_file);
         serde_json::to_writer_pretty(outlier_writer, &outlier_map).wrap_err("Failed to save outliers")?;
     }
     let n_outliers: usize = outliers.values().map(|val| val.len()).sum();
-    println!("-{:-^80}-", " Summary ");
+    println!("-{:-^100}-", format!(" Summary of {} samples ", n_generated));
     println!("Sampled {} subprocesses from which {} passed and {} contained outliers.",
              sample_result.len(), sample_result.len() - outliers.len(), outliers.len());
     println!("Found {} outliers in total, averaging {} outliers per subprocess.",
              n_outliers, n_outliers as f64 / sample_result.len() as f64);
-    println!("-{:-^80}-", "");
+    println!("-{:-^100}-", "");
     return Ok(());
 }
