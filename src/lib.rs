@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::{Instant, Duration};
 use clap::Parser;
 use color_eyre::eyre::{WrapErr, eyre};
 use indicatif::ProgressBar;
@@ -98,9 +99,27 @@ impl Outlier {
     }
 }
 
+/// Struct to hold result of the calculation at a phase space point together with the runtimes of both OLPs.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PSPResult {
+    pub value: [f64; 4],
+    pub olp_1_time: Duration,
+    pub olp_2_time: Duration
+}
+
+impl PSPResult {
+    pub fn new(value: [f64; 4], olp_1_time: Duration, olp_2_time: Duration) -> PSPResult {
+        return PSPResult {
+            value,
+            olp_1_time,
+            olp_2_time
+        };
+    }
+}
+
 /// Generate the actual sample of the subprocesses.
 pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
-                   -> eyre::Result<(HashMap<Subprocess, Vec<[f64; 4]>>,
+                   -> eyre::Result<(HashMap<Subprocess, Vec<PSPResult>>,
                                     HashMap<Subprocess, Vec<Outlier>>)> {
     procspawn::init();
     let mut jobs: usize = std::thread::available_parallelism()?.get();
@@ -114,13 +133,13 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
     println!("[2/4] Generating sample of size {}....", batch_size * jobs);
     { // Initialize both OLPs once to catch possible errors, since errors from the workers are not properly propagated to the main process
         let mut olp_1 = OneLoopProvider::create(&config.olp_1.order_file, &config.olp_1.library_path)
-            .wrap_err("Failed to create OneLoopProvider struct for olp_1").unwrap();
+            .wrap_err("Failed to create OneLoopProvider struct for olp_1")?;
         let mut olp_2 = OneLoopProvider::create(&config.olp_2.order_file, &config.olp_2.library_path)
-            .wrap_err("Failed to create OneLoopProvider struct for olp_2").unwrap();
+            .wrap_err("Failed to create OneLoopProvider struct for olp_2")?;
         olp_1.init(&config.olp_1.order_file, &config.olp_1.contract_file, &config.olp_1.model_parameters)
-            .wrap_err("Failed to initialize olp_1").unwrap();
+            .wrap_err("Failed to initialize olp_1")?;
         olp_2.init(&config.olp_2.order_file, &config.olp_2.contract_file, &config.olp_2.model_parameters)
-            .wrap_err("Failed to initialize olp_2").unwrap();
+            .wrap_err("Failed to initialize olp_2")?;
 
         let common_subprocesses: Vec<Subprocess> = olp_1.get_sp_table().unwrap().keys()
             .map(|key| (*key).clone())
@@ -141,7 +160,7 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
     for i in 0..jobs {
         worker_handles.push(procspawn::spawn((i, batch_size, (*cli_config).clone(), (*config).clone()),
          |(i, batch_size, cli_config, config)| {
-             let mut worker_res: HashMap<Subprocess, Vec<[f64; 4]>> = HashMap::new();
+             let mut worker_res: HashMap<Subprocess, Vec<PSPResult>> = HashMap::new();
              let mut outliers: HashMap<Subprocess, Vec<Outlier>> = HashMap::new();
              let mut rng = Pcg64Mcg::seed_from_u64(cli_config.seed.unwrap_or_else(|| random()));
              rng.advance((i * batch_size) as u128);
@@ -166,6 +185,10 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
              let mut olp_1_res: [f64; 4];
              let mut olp_2_res: [f64; 4];
 
+             let mut timer: Instant;
+             let mut olp_1_time: Duration;
+             let mut olp_2_time: Duration;
+
              let jobs = (config.n_points / batch_size) as u64;
              let mut pb: ProgressBar = ProgressBar::new(0);
              if i == 0 {
@@ -175,10 +198,14 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
              for _ in 0..batch_size {
                  key = common_subprocesses.choose(&mut rng).unwrap();
                  k = rambo(config.scale.powi(2), &config.masses, n_in, &mut rng).wrap_err("Failed to generate phase space point").unwrap();
+                 timer = Instant::now();
                  olp_1_res = olp_1.evaluate_subprocess(key, &k, config.scale)
                      .wrap_err_with(|| format!("Failed to evaluate olp_1 at phase space point {:?}", k)).unwrap();
+                 olp_1_time = timer.elapsed();
+                 timer = Instant::now();
                  olp_2_res = olp_2.evaluate_subprocess(key, &k, config.scale)
                      .wrap_err_with(|| format!("Failed to evaluate olp_2 at phase space point {:?}", k)).unwrap();
+                 olp_2_time = timer.elapsed();
                  let mut res = [0.; 4];
                  for j in 0..4 {
                      if olp_1_res[config.olp_1.permutation.unwrap()[j]] == olp_2_res[config.olp_2.permutation.unwrap()[j]] {
@@ -190,9 +217,9 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
                  }
                  if !res.iter().any(|x| x.is_nan()) {
                      if worker_res.contains_key(key) {
-                         worker_res.get_mut(key).unwrap().push(res);
+                         worker_res.get_mut(key).unwrap().push(PSPResult::new(res, olp_1_time, olp_2_time));
                      } else {
-                         worker_res.insert((*key).clone(), vec![res]);
+                         worker_res.insert((*key).clone(), vec![PSPResult::new(res, olp_1_time, olp_2_time)]);
                      }
                      if res.iter().any(|x| x.abs() > config.outlier_threshold) {
                          if outliers.contains_key(key) {
@@ -214,7 +241,7 @@ pub fn generate_sample(cli_config: &CLIConfig, config: &Config)
     }
 
     println!("[3/4] Processing sample...");
-    let mut result: HashMap<Subprocess, Vec<[f64; 4]>> = HashMap::new();
+    let mut result: HashMap<Subprocess, Vec<PSPResult>> = HashMap::new();
     let mut outliers: HashMap<Subprocess, Vec<Outlier>> = HashMap::new();
     for (worker_res, worker_outliers) in &mut result_list {
         for (key, value) in worker_res.iter_mut() {

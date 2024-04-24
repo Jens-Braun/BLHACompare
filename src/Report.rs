@@ -1,19 +1,54 @@
+#![allow(dead_code)]
 use std::path::PathBuf;
 use std::collections::HashMap;
 use color_eyre::eyre::{WrapErr};
 use std::io::Write;
+use std::time::Duration;
 use plotters::prelude::*;
 use crate::OLCParser::Subprocess;
-use crate::Outlier;
+use crate::{Outlier, PSPResult};
 
 const GREY: RGBColor = RGBColor(158, 158, 158);
 
+fn mean_var(values: Vec<f64>) -> (f64, f64) {
+    let mean = values.iter().sum::<f64>() / (values.len() as f64);
+    let var = values.iter().map(|x| (x - mean.clone()) * (x - mean.clone())).sum::<f64>() / (values.len() as f64 - 1f64);
+    return (mean, var);
+}
+
+fn mean(values: Vec<f64>) -> f64 {
+    let mean = values.iter().sum::<f64>() / (values.len() as f64);
+    return mean;
+}
+
+fn var(values: Vec<f64>) -> f64 {
+    let mean = values.iter().sum::<f64>() / (values.len() as f64);
+    let var = values.iter().map(|x| (x - mean.clone()) * (x - mean.clone())).sum::<f64>() / (values.len() as f64 - 1f64);
+    return var;
+}
+
+fn nested_mean(values: &Vec<Vec<f64>>) -> f64 {
+    return values.iter().map(|vec| vec.iter().sum::<f64>()).sum::<f64>()
+        / values.iter().map(|vec| vec.len() as f64).sum::<f64>();
+}
+
+fn nested_var(values: &Vec<Vec<f64>>) -> f64 {
+    let mean = nested_mean(values);
+    let var = values.iter().map(|vec|
+        vec.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>()
+    ).sum::<f64>() / (values.iter().map(|vec| vec.len() as f64).sum::<f64>() - 1f64);
+    return var;
+}
+
+pub fn nested_std_dev(values: &Vec<Vec<f64>>) -> f64 {
+    return nested_var(values).sqrt();
+}
 
 /// Write a text report to `outfile_path` that contains the result of the full sample and only the outliers
 /// for each subprocess
 pub fn write_text_report(outfile_path: &PathBuf,
                          outlier_threshold: f64,
-                         result: &HashMap<Subprocess, Vec<[f64; 4]>>,
+                         result: &HashMap<Subprocess, Vec<PSPResult>>,
                          outliers: &HashMap<Subprocess, Vec<Outlier>>)
     -> eyre::Result<()> {
     let outfile = std::fs::File::create(outfile_path)
@@ -21,18 +56,42 @@ pub fn write_text_report(outfile_path: &PathBuf,
     let mut outfile_writer = std::io::BufWriter::new(outfile);
 
     let total_mean: Vec<f64> = (0..4).map(|i| result.values().map(|val|
-        val.iter().map(|x| x[i]).sum::<f64>()).sum::<f64>() /
+        val.iter().map(|x| x.value[i]).sum::<f64>()).sum::<f64>() /
         result.values().map(|val| val.len() as f64).sum::<f64>()).collect();
     let total_variance: Vec<f64> = (0..4).map(|i|
-        result.values().map(|val| val.iter().map(|x| (x[i] - total_mean[i]).powi(2)).sum::<f64>()).sum::<f64>()
+        result.values().map(|val| val.iter().map(|x| (x.value[i] - total_mean[i]).powi(2)).sum::<f64>()).sum::<f64>()
          / (result.values().map(|val| val.len() as f64).sum::<f64>() - 1.)
     ).collect();
     let total_std_deviation: Vec<f64> = total_variance.iter().map(|x| x.sqrt()).collect();
-
+    let olp_1_time_mean = nested_mean(&result.values().map(|vec|
+        vec.iter().map(|x| x.olp_1_time.as_secs_f64()).collect()).collect());
+    let olp_2_time_mean = nested_mean(&result.values().map(|vec|
+        vec.iter().map(|x| x.olp_2_time.as_secs_f64()).collect()).collect());
+    let olp_1_time_std_dev = nested_std_dev(&result.values().map(|vec|
+        vec.iter().map(|x| x.olp_1_time.as_secs_f64()).collect()).collect());
+    let olp_2_time_std_dev = nested_std_dev(&result.values().map(|vec|
+        vec.iter().map(|x| x.olp_2_time.as_secs_f64()).collect()).collect());
 
     writeln!(&mut outfile_writer, "={:=^120}=", " Summary of all subprocesses ")?;
     for i in 0..4 {
         writeln!(&mut outfile_writer, "Result component {i}: {} ± {}", total_mean[i], total_std_deviation[i])?;
+    }
+    writeln!(&mut outfile_writer, "Average time per phase space point for OLP1: {:?} ± {:?}",
+             Duration::from_secs_f64(olp_1_time_mean), Duration::from_secs_f64(olp_1_time_std_dev))?;
+    writeln!(&mut outfile_writer, "Average time per phase space point for OLP2: {:?} ± {:?}",
+             Duration::from_secs_f64(olp_2_time_mean), Duration::from_secs_f64(olp_2_time_std_dev))?;
+    if olp_1_time_mean > olp_2_time_mean {
+        writeln!(&mut outfile_writer, "OLP2 was, on average, {:?} ± {:?} times faster than OLP1",
+            olp_1_time_mean / olp_2_time_mean,
+            f64::sqrt((olp_1_time_std_dev / olp_2_time_mean).powi(2)
+                + olp_1_time_mean.powi(2) * (olp_2_time_std_dev / olp_2_time_mean))
+        )?;
+    } else {
+        writeln!(&mut outfile_writer, "OLP1 was, on average, {:?} ± {:?} times faster than OLP2",
+                 olp_2_time_mean / olp_1_time_mean,
+                 f64::sqrt((olp_2_time_std_dev / olp_1_time_mean).powi(2)
+                     + olp_2_time_mean.powi(2) * (olp_1_time_std_dev / olp_1_time_mean))
+        )?;
     }
 
     for key in result.keys() {
@@ -44,11 +103,13 @@ pub fn write_text_report(outfile_path: &PathBuf,
             None => 0
         };
 
-        let mean: Vec<f64> = (0..4).map(|i| data.iter().map(|x| x[i]).sum::<f64>() / (data.len() as f64)).collect();
+        let mean: Vec<f64> = (0..4).map(|i| data.iter().map(|x| x.value[i]).sum::<f64>() / (data.len() as f64)).collect();
         let variance: Vec<f64> = (0..4).map(|i|
-            data.iter().map(|x| (x[i] - mean[i]).powi(2)).sum::<f64>() / (data.len() as f64 - 1.)
+            data.iter().map(|x| (x.value[i] - mean[i]).powi(2)).sum::<f64>() / (data.len() as f64 - 1.)
         ).collect();
         let std_deviation: Vec<f64> = variance.iter().map(|x| x.sqrt()).collect();
+        let (olp_1_time_mean, olp_1_time_var) = mean_var(data.iter().map(|x| x.olp_1_time.as_secs_f64()).collect());
+        let (olp_2_time_mean, olp_2_time_var) = mean_var(data.iter().map(|x| x.olp_2_time.as_secs_f64()).collect());
 
 
 
@@ -60,6 +121,23 @@ pub fn write_text_report(outfile_path: &PathBuf,
             writeln!(&mut outfile_writer, "Found {} outliers in {} points with absolute deviations", n_outliers, data.len())?;
         } else {
             writeln!(&mut outfile_writer, "Found {} outliers in {} points.", n_outliers, data.len())?;
+        }
+        writeln!(&mut outfile_writer, "Average time per phase space point for OLP1: {:?} ± {:?}",
+                 Duration::from_secs_f64(olp_1_time_mean), Duration::from_secs_f64(olp_1_time_var.sqrt()))?;
+        writeln!(&mut outfile_writer, "Average time per phase space point for OLP2: {:?} ± {:?}",
+                 Duration::from_secs_f64(olp_2_time_mean), Duration::from_secs_f64(olp_2_time_var.sqrt()))?;
+        if olp_1_time_mean > olp_2_time_mean {
+            writeln!(&mut outfile_writer, "OLP2 was, on average, {:?} ± {:?} times faster than OLP1",
+                     olp_1_time_mean / olp_2_time_mean,
+                     f64::sqrt((olp_1_time_var.sqrt() / olp_2_time_mean).powi(2)
+                         + olp_1_time_mean.powi(2) * (olp_2_time_var.sqrt() / olp_2_time_mean))
+            )?;
+        } else {
+            writeln!(&mut outfile_writer, "OLP1 was, on average, {:?} ± {:?} times faster than OLP2",
+                     olp_2_time_mean / olp_1_time_mean,
+                     f64::sqrt((olp_2_time_var.sqrt() / olp_1_time_mean).powi(2)
+                         + olp_2_time_mean.powi(2) * (olp_1_time_var.sqrt() / olp_1_time_mean))
+            )?;
         }
 
         match outlier_data {
@@ -91,7 +169,7 @@ pub fn write_text_report(outfile_path: &PathBuf,
 /// Draw histograms for all components for each subprocess that contains at least one component with outliers
 pub fn draw_histograms(outfile_path: &PathBuf,
                        outlier_threshold: f64,
-                       result: &HashMap<Subprocess, Vec<[f64; 4]>>,
+                       result: &HashMap<Subprocess, Vec<PSPResult>>,
                        outliers: &HashMap<Subprocess, Vec<Outlier>>)
                        -> eyre::Result<()> {
     let canvas = SVGBackend::new(outfile_path, (4 * 640, outliers.len() as u32 * 360)).into_drawing_area();
@@ -101,7 +179,7 @@ pub fn draw_histograms(outfile_path: &PathBuf,
     for (i, key) in outliers.keys().enumerate() {
         for j in 0..4 {
             let key_string = key.to_string();
-            let component_data: Vec<f64> = result.get(key).unwrap().iter().map(|x| x[j]).collect();
+            let component_data: Vec<f64> = result.get(key).unwrap().iter().map(|x| x.value[j]).collect();
             let data_max: f64 = *component_data.iter().max_by(|x, y| x.total_cmp(y)).unwrap();
             let data_min: f64 = *component_data.iter().min_by(|x, y| x.total_cmp(y)).unwrap();
             let x_spec;
@@ -152,18 +230,18 @@ pub fn draw_histograms(outfile_path: &PathBuf,
 /// Draw one boxplot for each component containing all subprocesses
 pub fn draw_boxplots(outfile_path: &PathBuf,
                      outlier_threshold: f64,
-                     result: &HashMap<Subprocess, Vec<[f64; 4]>>)
+                     result: &HashMap<Subprocess, Vec<PSPResult>>)
                      -> eyre::Result<()> {
     let canvas = SVGBackend::new(outfile_path, (4 * 680, 80 + result.len() as u32 * 25)).into_drawing_area();
     let areas = canvas.split_evenly((1, 4));
     let mut charts = Vec::with_capacity(4);
     let keys: Vec<String> = result.keys().map(|k| k.to_string()).collect();
     let max: Vec<f64> = (0..4).into_iter().map(|i|
-        result.values().map(|val| val.iter().map(|x| x[i]).max_by(|x, y| x.total_cmp(&y)).unwrap())
+        result.values().map(|val| val.iter().map(|x| x.value[i]).max_by(|x, y| x.total_cmp(&y)).unwrap())
             .max_by(|x, y| x.total_cmp(&y)).unwrap()
     ).collect();
     let min: Vec<f64> = (0..4).into_iter().map(|i|
-        result.values().map(|val| val.iter().map(|x| x[i]).min_by(|x, y| x.total_cmp(&y)).unwrap())
+        result.values().map(|val| val.iter().map(|x| x.value[i]).min_by(|x, y| x.total_cmp(&y)).unwrap())
             .min_by(|x, y| x.total_cmp(&y)).unwrap()
     ).collect();
     for i in 0..4 {
@@ -207,9 +285,10 @@ pub fn draw_boxplots(outfile_path: &PathBuf,
 
         chart.draw_series(result.iter().map(|(key, value)| {
             let key_string: &String = &keys.iter().filter(|s| **s == key.to_string()).collect::<Vec<&String>>()[0];
-            let component_data: Vec<f64> = value.iter().map(|x| x[i]).collect();
+            let component_data: Vec<f64> = value.iter().map(|x| x.value[i]).collect();
             let mean = component_data.iter().sum::<f64>() / (component_data.len() as f64);
-            let std_dev = component_data.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (component_data.len() as f64 - 1.);
+            let std_dev = (component_data.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                / (component_data.len() as f64 - 1.)).sqrt();
             let style;
             let data_max: f64 = *component_data.iter().max_by(|x, y| x.total_cmp(y)).unwrap();
             let data_min: f64 = *component_data.iter().min_by(|x, y| x.total_cmp(y)).unwrap();
@@ -236,7 +315,7 @@ pub fn draw_boxplots(outfile_path: &PathBuf,
             chart2.plotting_area().draw(&(
                 EmptyElement::at((min[i] - 0.15 * (max[i] - min[i]), -0.5)) +
                 MultiLineText::from_string(format!("x10^(-{})\n {:+.2}", x_scale_factor, x_shift_factor * 10i32.pow(x_scale_factor) as f64),
-                          (-50, 10), ("", 13).into_font(), 100)))?;
+                          (-60, 10), ("", 13).into_font(), 100)))?;
         }
         charts.push(chart);
     }

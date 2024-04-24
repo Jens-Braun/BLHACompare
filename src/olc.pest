@@ -9,7 +9,7 @@ keyword = _{^"InterfaceVersion" | ^"Model" | ^"CorrectionType" | ^"IRregularisat
 config_line = _{keyword ~ (!"|" ~ ANY)* ~ "|" ~ ("OK" | "Ok" | "ok") ~ NEWLINE}
 
 
-amplitude_type = {"Tree" | "Loop" | "ccTree" | "scTree" | "scTree2" | "LoopInduced"}
+amplitude_type = {^"Tree" | ^"Loop" | ^"ccTree" | ^"scTree" | ^"scTree2" | ^"LoopInduced"}
 
 pdg_number = ${"-"? ~ (!" " ~ ASCII_DIGIT)+}
 
@@ -21,7 +21,7 @@ process_spec = { initial_list ~ "->" ~ final_list }
 
 process_id = {ASCII_DIGIT*}
 
-amplitude_type_specification = { "AmplitudeType" ~ amplitude_type ~ "|" ~ ("OK" | "Ok" | "ok")}
+amplitude_type_specification = { ^"AmplitudeType" ~ amplitude_type ~ "|" ~ ("OK" | "Ok" | "ok")}
 
 subprocess = { process_spec ~ "|" ~ "1" ~ process_id }
 

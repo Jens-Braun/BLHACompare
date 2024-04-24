@@ -108,14 +108,14 @@ impl OLCParser {
             match sp_rule.as_rule() {
                 Rule::amplitude_type_specification => {
                     let amplitude_type = sp_rule.into_inner();
-                    current_amplitude_type = match amplitude_type.as_str() {
-                        "Tree" => AmplitudeType::Tree,
-                        "scTree" => AmplitudeType::scTree,
-                        "scTree2" => AmplitudeType::scTree2,
-                        "ccTree" => AmplitudeType::ccTree,
-                        "Loop" => AmplitudeType::Loop,
-                        "LoopInduced" => AmplitudeType::LoopInduced,
-                        _ => return Err(eyre!("Encountered unknown amplitude type {amplitude_type}.")),
+                    current_amplitude_type = match amplitude_type.as_str().to_lowercase().as_str() {
+                        "tree" => AmplitudeType::Tree,
+                        "sctree" => AmplitudeType::scTree,
+                        "sctree2" => AmplitudeType::scTree2,
+                        "cctree" => AmplitudeType::ccTree,
+                        "loop" => AmplitudeType::Loop,
+                        "loopinduced" => AmplitudeType::LoopInduced,
+                        _ => return Err(eyre!("Encountered unknown amplitude type {}.", amplitude_type.as_str())),
                     }
                 }
                 Rule::subprocess => {

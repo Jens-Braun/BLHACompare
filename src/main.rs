@@ -9,9 +9,10 @@ use BLHACompare::*;
 use BLHACompare::Report::{draw_boxplots, draw_histograms, write_text_report};
 
 fn main() {
+    color_eyre::install().expect("Unable to initialize error handlers");
     match run() {
         Ok(()) => (),
-        Err(E) => println!("BLHACompare terminated due to an error: \n {E}")
+        Err(E) => println!("BLHACompare terminated due to an error: \n {E:?}")
     }
 }
 
